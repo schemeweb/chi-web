@@ -11,13 +11,9 @@ most of which are written by Peter Bex.
 * SRFI 18
 * SRFI 69
 
-## Language dependencies
+## Other dependencies
 
-* defstruct
-* matchable
-
-## Library dependencies
-
+* matchable or `(chibi match)`
 * base64
 * simple-md5
 * simple-sha1
