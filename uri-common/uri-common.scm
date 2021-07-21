@@ -37,23 +37,33 @@
 ; ticket tracking system (assign tickets to user 'sjamaan'):
 ; http://trac.callcc.org
 
-(module uri-common
-  (uri-reference uri-reference? absolute-uri absolute-uri? relative-ref?
-   uri->uri-generic uri-generic->uri uri->list
-   make-uri update-uri uri? uri-scheme uri-username uri-password
-   uri-host uri-port uri-path uri-query uri-fragment
-   uri->string form-urlencode form-urldecode form-urlencoded-separator
-   uri-relative-to uri-relative-from
-   uri-normalize-path-segments uri-normalize-case
-   uri-path-relative? uri-path-absolute?
-   uri-default-port? uri-encode-string uri-decode-string
+(define (replace-char-with-string string old-char new-substring)
+  (call-with-port
+   (open-output-string)
+   (lambda (out)
+     (let loop ((i 0))
+       (if (= i (string-length string))
+           (get-output-string out)
+           (let ((char (string-ref string i)))
+             (if (char=? old-char char)
+                 (write-string new-substring out)
+                 (write-char char out))))))))
 
-   char-set:gen-delims char-set:sub-delims
-   char-set:uri-reserved char-set:uri-unreserved)
+(define (string-contains-char? chars char)
+  (let loop ((n (string-length chars)))
+    (and (> n 0) (or (char=? char (string-ref chars (- n 1)))
+                     (loop (- n 1))))))
 
-(import scheme (chicken base) (chicken string) (chicken format))
-(import srfi-1 srfi-13 srfi-14 defstruct matchable)
-(import (prefix uri-generic generic:))
+(define (split-string-at-chars string chars)
+  (let loop ((a 0) (b 0) (fields '()))
+    (if (= a (string-length string))
+        (reverse fields)
+        (if (= b (string-length string))
+            (loop b b (cons (substring string a b) fields))
+            (let ((char (string-ref string b)))
+              (if (string-contains-char? chars char)
+                  (loop (+ b 1) (+ b 1) (cons (substring string a b) fields))
+                  (loop a (+ b 1) fields)))))))
 
 ;; We could use the hostinfo egg for this, but that would be yet another
 ;; dependency. Besides, not all service names have a matching URI scheme
@@ -69,13 +79,17 @@
     ))
 
 ;; A common URI is a generic URI plus stored decoded versions of most components
-(defstruct URI-common
-  generic username password host port path query fragment)
-
-(define-record-printer (URI-common x out)
-  (fprintf out "#<URI-common: scheme=~S port=~S host=~S path=~S query=~S fragment=~S>"
-	   (uri-scheme x) (uri-port x) (uri-host x)
-           (uri-path x) (uri-query x) (uri-fragment x)))
+(define-record-type URI-common
+  (make-URI-common generic username password host port path query fragment)
+  URI-common?
+  (generic   URI-common-generic   URI-common-generic-set!)
+  (username  URI-common-username  URI-common-username-set!)
+  (password  URI-common-password  URI-common-password-set!)
+  (host      URI-common-host      URI-common-host-set!)
+  (port      URI-common-port      URI-common-port-set!)
+  (path      URI-common-path      URI-common-path-set!)
+  (query     URI-common-query     URI-common-query-set!)
+  (fragment  URI-common-fragment  URI-common-fragment-set!))
 
 ;;; Conversion procedures
 (define (uri->uri-generic uri)
@@ -123,7 +137,8 @@
   (and (URI-common? u) (generic:absolute-uri? (URI-common-generic u))))
 (define (relative-ref? u)
   (and (URI-common? u) (generic:relative-ref? (URI-common-generic u))))
-(define uri-scheme   (compose generic:uri-scheme URI-common-generic))
+(define (uri-scheme u)
+  (generic:uri-scheme (URI-common-generic u)))
 (define uri-username URI-common-username)
 (define uri-password URI-common-password)
 (define uri-host     URI-common-host)
@@ -229,10 +244,13 @@
 (define (default-port? port scheme)
   (eqv? port (alist-ref scheme default-ports)))
 
-(define (encode-path p)
-  (and p (match p
-                (('/ . rst) (cons '/ (map uri-encode-string rst)))
-                (else (map uri-encode-string p)))))
+(define (path-transcoder transcode-component)
+  (lambda (p)
+    (and p (if (and (pair? p) (eq? '/ (car p)))
+               (cons '/ (map transcode-component (cdr p)))
+               (map transcode-component p)))))
+
+(define encode-path (path-transcoder uri-encode-string))
 
 ;;; Handling of application/x-www-form-urlencoded data
 ;;
@@ -275,7 +293,7 @@
                                      separator
                                      (char-set->string separator)) 1))
               (enc (lambda (s)
-                     (string-translate*
+                     (replace-char-with-string
                       (uri-encode-string
                        s
                        (char-set-union
@@ -284,19 +302,24 @@
                         (char-set-delete
                          (char-set-complement char-set:uri-unreserved)
                          #\space)))
-                       '((" " . "+")))))
+                      #\space
+                      "+")))
               (encoded-components
-               (reverse (fold
-                         (lambda (arg query)
-                           (match arg
-                             ((a . #f) query)
-                             ((a . #t) (cons (enc (->string a)) query))
-                             ((a . b) (cons
-                                       (sprintf "~A=~A"
-                                                (enc (->string a))
-                                                (enc (->string b)))
-                                       query))))
-                         '() alist))))
+               (reverse
+                (fold
+                 (lambda (arg query)
+                   (if (not (pair? arg))
+                       (error "Not a pair:" arg)
+                       (case (cdr arg)
+                         ((#f) query)
+                         ((#t) (cons (enc (symbol->string (car arg)))
+                                     query))
+                         (else (cons (string-append
+                                      (enc (symbol->string (car arg)))
+                                      "="
+                                      (enc (symbol->string (cdr arg))))
+                                     query)))))
+                 '() alist))))
          (and (not (null? encoded-components))
               (string-join encoded-components separator-string)))))
 
@@ -306,19 +329,18 @@
              (let ((idx (string-index part #\=))
                    (decode (lambda (s)
                              (uri-decode-string
-                              (string-translate* s '(("+" . "%20")))))))
+                              (replace-char-with-string s #\+ "%20")))))
                (if idx
                    (cons (string->symbol (decode (string-take part idx)))
                          (decode (string-drop part (add1 idx))))
                    (cons (string->symbol (decode part))
                          #t))))
-           (string-split query (char-set->string (->char-set separator)) #t))
+           (split-string-at-chars
+            query
+            (char-set->string (->char-set separator))))
       '())) ; _always_ provide a list interface for the query, even if not there
 
-(define (decode-path p)
-  (and p (match p
-                (('/ . rst) (cons '/ (map uri-decode-string rst)))
-                (else (map uri-decode-string p)))))
+(define decode-path (path-transcoder uri-decode-string))
 
 ;;; Miscellaneous procedures
 
