@@ -135,7 +135,7 @@
                    (if (eq? key 'fragment) value new-fragment)))))))
 
 
-(define (is-ipv6-host? h) (and (substring-index ":" h) #t))
+(define (is-ipv6-host? h) (and h (substring-index ":" h) #t))
 
 (define (update-URIAuth uri-auth . args)
   (let loop ((args args)
@@ -157,7 +157,7 @@
                    (if (eq? key 'password) value new-password)
                    (if (eq? key 'host) value new-host)
                    (if (eq? key 'host)
-                       (and value (is-ipv6-host? value))
+                       (is-ipv6-host? value)
                        new-ipv6-host?)
                    (if (eq? key 'port) value new-port)))))))
 
@@ -559,7 +559,7 @@
         (and uu (uri-char-list->string uu))
         (and uw (uri-char-list->string uw))
         host
-        (and host (is-ipv6-host? host))
+        (is-ipv6-host? host)
         (and (pair? up) (string->number (list->string up))))
        rst))))
 
@@ -1184,7 +1184,7 @@
 
 
 (define (uri-relative-from uabs base)
-  (cond ((ucdiff? uri-scheme uabs base)      (update-URI uabs))
+  (cond ((ucdiff? uri-scheme uabs base)    (update-URI uabs))
         ((ucdiff? uri-authority uabs base) (update-URI uabs 'scheme #f))
         ;; Special case: no relative representation for http://a/ -> http://a
         ;; ....unless that should be a path of ("..")
@@ -1203,11 +1203,14 @@
                      'authority #f
                      'path (list)))
 	(else
-	 (update-URI uabs
+         (update-URI uabs
                      'scheme #f
                      'authority #f
                      'query #f
-                     'path (list)))))
+                     'path (match (uri-path uabs)
+                             (("") (list ""))
+                             ((p ... "") (list "."))
+                             ((p ... last) (list last)))))))
 
 (define (ucdiff? sel u1 u2)
   (let ((s1 (sel u1))
@@ -1222,29 +1225,24 @@
   (match (list pabs base)
          ((pabs ()) pabs)
          ((() base) (list))
-         ;; Construct a relative path segment if the paths share a
-         ;; leading segment other than a leading '/'
-         ((('/ . (and sa1 (ra1 . ra2))) ('/ . (and sb1 (rb1 . rb2))))
-          (make-rel-path
-           (if (string=? ra1 rb1)
-               (rel-path-from1 sa1 sb1)
-               pabs)))
+         ;; Construct a relative path segment
+         ((('/ . sa1) ('/ . sb1))
+          (rel-path-from1 sa1 sb1))
          (else (uri-error 'rel-path-from "Both URI paths must be absolute" pabs base))))
-
-(define (make-rel-path x)
-  (match x
-         ((or ('/ . rst) ("." . rst) (".." . rst)) x)
-         (else (cons "." x))))
 
 ;;  rel-path-from1 strips off trailing names from the supplied paths,
 
 (define (rel-path-from1 pabs base)
   (match-let* (((na . sa)  (reverse pabs))
 	       ((nb . sb)  (reverse base)))
-     (let ((rp (rel-segs-from (reverse sa) (reverse sb))))
-       (if (null? rp)  (cond ((string=? na nb)  (list))
-			     (else              (list na)))
-	   (append rp (list na))))))
+    (let ((rp (rel-segs-from (reverse sa) (reverse sb))))
+      (match rp
+        (() (cond ((string=? na nb) (list))
+                  ((string=? na "") (list "."))
+                  (else (list na))))
+        ((rp1 ... (or ".." "."))
+         (if (string=? na "") rp (append rp (list na))))
+        (else (append rp (list na)) )))))
 
 
 ;;  rel-segs-from discards any common leading segments from both paths,
