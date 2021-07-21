@@ -37,45 +37,6 @@
 ;;  POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-(module uri-generic
-  (uri-reference make-uri update-uri update-authority
-   uri-reference? uri-auth uri-authority uri-scheme uri-path uri-query
-   uri-fragment uri-host uri-ipv6-host? uri-port
-   uri-username uri-password
-   authority? authority-host authority-ipv6-host? authority-port
-   authority-username authority-password
-
-   uri? absolute-uri absolute-uri? uri->string uri->list
-   relative-ref? uri-relative-to uri-relative-from
-   uri-decode-string uri-encode-string
-   uri-normalize-case uri-normalize-path-segments
-   uri-path-absolute? uri-path-relative?
-
-   char-set:gen-delims char-set:sub-delims
-   char-set:uri-reserved char-set:uri-unreserved)
-
-(import scheme (chicken base) (chicken string) (chicken port)
-        (chicken format) srfi-1 srfi-4 srfi-14 matchable)
-
-(define uri-error error)
-
-(cond-expand
- (chicken)
- (else
-  (define (->string obj)
-    (let ((s (open-output-string)))
-      (display obj s)
-      (let ((result (get-output-string s)))
-        (close-output-port s)
-        result)))
-  ))
-
-
-;; What to do with these?
-;; #;(cond-expand
-;;    (utf8-strings (use utf8-srfi-14))
-;;    (else (use srfi-14)))
-
 (define-record-type <URI>
   (make-URI scheme authority path query fragment)
   URI?
@@ -93,25 +54,6 @@
   (host URIAuth-host URIAuth-host-set!)
   (ipv6-host? URIAuth-ipv6-host? URIAuth-ipv6-host?-set!)
   (port URIAuth-port URIAuth-port-set!))
-
-
-(cond-expand
- (chicken
-  (define-record-printer (<URI> x out)
-    (fprintf out "#(URI scheme=~S authority=~A path=~S query=~S fragment=~S)"
-             (URI-scheme x)
-             (URI-authority x)
-             (URI-path x)
-             (URI-query x)
-             (URI-fragment x)))
-
-  (define-record-printer (<URIAuth> x out)
-    (fprintf out "#(URIAuth host=~S~A port=~A)"
-             (URIAuth-host x)
-             (if (URIAuth-ipv6-host? x) "(ipv6)" "")
-             (URIAuth-port x))))
- (else))
-
 
 (define (update-URI uri . args)
   (let loop ((args args)
@@ -135,7 +77,7 @@
                    (if (eq? key 'fragment) value new-fragment)))))))
 
 
-(define (is-ipv6-host? h) (and h (substring-index ":" h) #t))
+(define (is-ipv6-host? h) (and h (string-contains h ":") #t))
 
 (define (update-URIAuth uri-auth . args)
   (let loop ((args args)
@@ -243,56 +185,8 @@
                   (if (eq? key 'auth) value auth)
                   (if (eq? key 'authority) value authority)))))))))
 
-
-(cond-expand
-
- (chicken
-  (define update-uri
-    (let ((unset (list 'unset)))
-      (lambda (uri . key/values)
-        (apply
-         (lambda (#!key
-                  (scheme (URI-scheme uri)) (path (URI-path uri))
-                  (query (URI-query uri)) (fragment (URI-fragment uri))
-                  (auth unset) (authority unset)
-                  (username unset) (password unset)
-                  (host unset) (port unset))
-           (let* ((args (list 'scheme scheme
-                              'path path
-                              'query query
-                              'fragment fragment))
-                  (args (if (not (eq? auth unset))
-                            (append args (list 'auth auth)) args))
-                  (args (if (not (eq? authority unset))
-                            (append args (list 'authority authority)) args))
-                  (args (if (not (eq? username unset))
-                            (append args (list 'username username)) args))
-                  (args (if (not (eq? password unset))
-                            (append args (list 'password password)) args))
-                  (args (if (not (eq? host unset))
-                            (append args (list 'host host)) args))
-                  (args (if (not (eq? port unset))
-                            (append args (list 'port port)) args))
-                  )
-             (apply update-uri* uri args)))
-         key/values)))))
-
- (else
-  (define update-uri update-uri*)))
-
-
 (define (make-uri* . key/values)
   (apply update-uri* (make-URI #f #f '() #f #f) key/values))
-
-(cond-expand
-
- (chicken
-  (define (make-uri . key/values)
-    (apply update-uri (make-URI #f #f '() #f #f) key/values)))
-
- (else
-  (define make-uri make-uri*)))
-
 
 (define (uri-equal? a b)
   (or (and (not a) (not b))
@@ -1016,13 +910,13 @@
          (else                (join-segments path))))
 
 (define (join-segments segments)
-  (string-intersperse
+  (string-join
    (map (lambda (segment)
           (uri-encode-string segment (char-set #\/)))
         segments) "/"))
 
 ;; Section 4.2; if the first segment contains a colon, it must be prefixed "./"
-(define (protect? sa) (substring-index ":" sa))
+(define (protect? sa) (and (string-contains sa ":") #t))
 
 ; specific: ((uri-authority uri) (uri-path uri) (uri-query uri)).
 
@@ -1279,8 +1173,11 @@
   (let* ((downcase (lambda (s)
                      (list->string (map char-downcase (string->list s)))))
          (normalized-uri (uri-reference
-			  (normalize-pct-encoding (uri->string uri (lambda (user pass) (conc user ":" pass))))))
-         (scheme         (string->symbol (downcase (->string (uri-scheme uri)))))
+			  (normalize-pct-encoding
+                           (uri->string uri (lambda (user pass)
+                                              (string-append user ":" pass))))))
+         (scheme         (string->symbol
+                          (downcase (symbol->string (uri-scheme uri)))))
          (host           (normalize-pct-encoding (downcase (uri-host uri)))))
     (update-uri* normalized-uri 'scheme scheme 'host host)))
 
@@ -1303,4 +1200,3 @@
 
 (define (uri-path-relative? uri)
   (not (uri-path-absolute? uri)))
-)
